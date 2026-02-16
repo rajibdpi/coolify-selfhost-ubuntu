@@ -1,4 +1,4 @@
-bash -c "$(cat <<'SCRIPT'
+#!/usr/bin/env bash
 set -euo pipefail
 
 if ! grep -q "Ubuntu 24.04" /etc/os-release; then
@@ -16,27 +16,23 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o 
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 UBU_CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${UBU_CODENAME} stable" \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${UBU_CODENAME} stable" \
   | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
 
 sudo apt update -y
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
 sudo usermod -aG docker "$USER" || true
 
-echo "==> Basic firewall (keep it simple + Coolify-friendly)..."
+echo "==> Basic firewall..."
 sudo ufw allow OpenSSH || true
 sudo ufw allow 80/tcp || true
 sudo ufw allow 443/tcp || true
 sudo ufw --force enable || true
 
 echo "==> Installing Coolify (official installer)..."
-# Official docs recommend this installer URL:
-# https://cdn.coollabs.io/coolify/install.sh
 curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash
 
-echo "==> Writing an 'Ultimate PHP Stack' template (Nginx + PHP-FPM + MariaDB + Redis)..."
+echo "==> Writing Compose template for PHP-FPM + MariaDB + Redis + Nginx..."
 STACK_DIR="/opt/coolify-ultimate/php-stack"
 sudo mkdir -p "$STACK_DIR"/{nginx,app,storage}
 sudo chown -R "$USER":"$USER" "$(dirname "$STACK_DIR")"
@@ -45,14 +41,11 @@ cat > "$STACK_DIR/docker-compose.yml" <<'YML'
 services:
   nginx:
     image: nginx:alpine
-    depends_on:
-      - php
+    depends_on: [php]
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./app:/var/www/html:ro
       - ./storage:/var/www/html/storage
-    # No host ports here (Coolify proxy publishes it)
-    # In Coolify: set domain for service "nginx" (container port 80)
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health || exit 1"]
       interval: 10s
@@ -62,10 +55,6 @@ services:
   php:
     image: php:8.3-fpm-alpine
     working_dir: /var/www/html
-    environment:
-      # Fill these in Coolify (or .env in your app)
-      APP_ENV: production
-      PHP_MEMORY_LIMIT: 512M
     volumes:
       - ./app:/var/www/html
       - ./storage:/var/www/html/storage
@@ -111,17 +100,12 @@ cat > "$STACK_DIR/nginx/default.conf" <<'CONF'
 server {
   listen 80;
   server_name _;
-
   root /var/www/html/public;
   index index.php index.html;
 
-  location = /health {
-    return 200 "ok\n";
-  }
+  location = /health { return 200 "ok\n"; }
 
-  location / {
-    try_files $uri $uri/ /index.php?$query_string;
-  }
+  location / { try_files $uri $uri/ /index.php?$query_string; }
 
   location ~ \.php$ {
     try_files $uri =404;
@@ -134,26 +118,15 @@ server {
 }
 CONF
 
-# Tiny placeholder so the stack boots immediately
 mkdir -p "$STACK_DIR/app/public"
 cat > "$STACK_DIR/app/public/index.php" <<'PHP'
-<?php
-echo "✅ Coolify Ultimate PHP Stack is running.\n";
+<?php echo "✅ Coolify Ultimate PHP Stack is running.\n";
 PHP
 
 echo
-echo "=============================="
 echo "✅ DONE!"
+echo "Template path: $STACK_DIR"
+echo "Coolify: create Resource -> Docker Compose, paste: $STACK_DIR/docker-compose.yml"
+echo "Assign domain to service: nginx (port 80). Coolify proxy will do SSL."
 echo
-echo "Coolify installed. Next steps:"
-echo "1) Log into Coolify dashboard (your server IP / domain)."
-echo "2) Create a new Resource -> Docker Compose."
-echo "3) Paste the compose from: $STACK_DIR/docker-compose.yml"
-echo "4) Set domain for service: nginx (port 80). Coolify proxy handles SSL."
-echo
-echo "Template stack path: $STACK_DIR"
-echo "=============================="
-echo
-echo "ℹ️ Note: Docker group change requires re-login (or reboot) to use docker without sudo."
-SCRIPT
-)"
+echo "ℹ️ Re-login required to use docker without sudo (docker group)."
