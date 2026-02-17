@@ -26,7 +26,7 @@ fi
 TARGET_USER="${SUDO_USER:-}"
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
   warn "SUDO_USER not detected. Docker group add may not work for your login user."
-  TARGET_USER="${TARGET_USER:-root}"
+  TARGET_USER="root"
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -57,7 +57,7 @@ log "Enabling & starting Docker..."
 systemctl enable docker
 systemctl restart docker
 
-# Add login user to docker group (IMPORTANT FIX)
+# Add login user to docker group
 if id "$TARGET_USER" >/dev/null 2>&1; then
   if id -nG "$TARGET_USER" | grep -qw docker; then
     log "User '$TARGET_USER' already in docker group."
@@ -95,7 +95,7 @@ else
   log "Swap already present or disabled. Skipping."
 fi
 
-# ====== Docker log rotation (prevents disk full) ======
+# ====== Docker log rotation ======
 log "Setting Docker log rotation..."
 mkdir -p /etc/docker
 cat >/etc/docker/daemon.json <<'JSON'
@@ -113,16 +113,14 @@ systemctl restart docker
 log "Installing Coolify (official installer)..."
 curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 
-# ====== Write PHP Stack Template (for Coolify Docker Compose resource) ======
+# ====== Write PHP Stack Template ======
 log "Writing Compose template for PHP-FPM + MariaDB + Redis + Nginx..."
 mkdir -p "$STACK_DIR"/{nginx,app,storage}
 
-# Ownership (so you can edit without root)
 if id "$TARGET_USER" >/dev/null 2>&1; then
   chown -R "$TARGET_USER":"$TARGET_USER" "$(dirname "$STACK_DIR")" || true
 fi
 
-# Auto-generate strong passwords (one-time)
 ENV_FILE="$STACK_DIR/.env"
 if [ ! -f "$ENV_FILE" ]; then
   MARIADB_PASSWORD="$(openssl rand -base64 24 | tr -d '\n')"
@@ -234,7 +232,7 @@ echo "Template path: $STACK_DIR"
 echo
 echo "Coolify -> Projects/Resources -> Docker Compose:"
 echo "  - Paste $STACK_DIR/docker-compose.yml content"
-echo "  - Also add env vars from $STACK_DIR/.env (or paste env_file content manually)"
+echo "  - Add env vars from $STACK_DIR/.env (or paste them into Coolify env)"
 echo "  - Assign domain to service: nginx (port 80). Coolify proxy will do SSL."
 echo
 echo "ℹ️ Logout/login required for docker group (user: $TARGET_USER)."
