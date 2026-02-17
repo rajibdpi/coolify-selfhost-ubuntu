@@ -1,132 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! grep -q "Ubuntu 24.04" /etc/os-release; then
-  echo "❌ This script is intended for Ubuntu 24.04.x"
-  exit 1
+# ====== Config (override via env) ======
+SWAP_GB="${SWAP_GB:-2}"                  # 0 দিলে swap skip
+ENABLE_UFW="${ENABLE_UFW:-1}"            # 0 দিলে ufw skip
+OPEN_8000="${OPEN_8000:-1}"              # 0 দিলে 8000 port খুলবে না
+STACK_DIR="${STACK_DIR:-/opt/coolify-ultimate/php-stack}"
+
+# ====== Helpers ======
+log(){ echo -e "\n\033[1;32m[OK]\033[0m $*"; }
+warn(){ echo -e "\n\033[1;33m[WARN]\033[0m $*"; }
+die(){ echo -e "\n\033[1;31m[ERR]\033[0m $*\033[0m" >&2; exit 1; }
+
+# ====== Root check ======
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+  die "Run as root: sudo bash $0  (or pipe to sudo bash)"
 fi
 
-echo "==> Updating packages & installing base tools..."
-sudo apt update -y
-sudo apt install -y ca-certificates curl gnupg ufw openssl
+# ====== OS check (24.04) ======
+. /etc/os-release
+if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "24.04" ]; then
+  die "This script is intended for Ubuntu 24.04.x (found: ${ID:-?} ${VERSION_ID:-?})"
+fi
 
-echo "==> Installing Docker (official repo)..."
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
+TARGET_USER="${SUDO_USER:-}"
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+  warn "SUDO_USER not detected. Docker group add may not work for your login user."
+  TARGET_USER="${TARGET_USER:-root}"
+fi
 
-UBU_CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${UBU_CODENAME} stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+export DEBIAN_FRONTEND=noninteractive
 
-sudo apt update -y
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo usermod -aG docker "$USER" || true
+log "Updating packages & installing base tools..."
+apt update -y
+apt upgrade -y
+apt install -y ca-certificates curl gnupg ufw openssl wget nano cron
 
-echo "==> Basic firewall..."
-sudo ufw allow OpenSSH || true
-sudo ufw allow 80/tcp || true
-sudo ufw allow 443/tcp || true
-sudo ufw --force enable || true
-
-echo "==> Installing Coolify (official installer)..."
-curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash
-
-echo "==> Writing Compose template for PHP-FPM + MariaDB + Redis + Nginx..."
-STACK_DIR="/opt/coolify-ultimate/php-stack"
-sudo mkdir -p "$STACK_DIR"/{nginx,app,storage}
-sudo chown -R "$USER":"$USER" "$(dirname "$STACK_DIR")"
-
-cat > "$STACK_DIR/docker-compose.yml" <<'YML'
-services:
-  nginx:
-    image: nginx:alpine
-    depends_on: [php]
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./app:/var/www/html:ro
-      - ./storage:/var/www/html/storage
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-
-  php:
-    image: php:8.3-fpm-alpine
-    working_dir: /var/www/html
-    volumes:
-      - ./app:/var/www/html
-      - ./storage:/var/www/html/storage
-    healthcheck:
-      test: ["CMD-SHELL", "php -v >/dev/null 2>&1 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-
-  mariadb:
-    image: mariadb:11
-    command: ["--character-set-server=utf8mb4","--collation-server=utf8mb4_unicode_ci"]
-    environment:
-      MARIADB_DATABASE: app
-      MARIADB_USER: app
-      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-change_me_strong}
-      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-change_me_root_strong}
-    volumes:
-      - mariadb_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$${MARIADB_ROOT_PASSWORD} --silent"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server","--appendonly","yes"]
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
-      interval: 10s
-      timeout: 3s
-      retries: 20
-
-volumes:
-  mariadb_data:
-  redis_data:
-YML
-
-cat > "$STACK_DIR/nginx/default.conf" <<'CONF'
-server {
-  listen 80;
-  server_name _;
-  root /var/www/html/public;
-  index index.php index.html;
-
-  location = /health { return 200 "ok\n"; }
-
-  location / { try_files $uri $uri/ /index.php?$query_string; }
-
-  location ~ \.php$ {
-    try_files $uri =404;
-    include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-    fastcgi_pass php:9000;
-  }
-
-  client_max_body_size 128m;
-}
-CONF
-
-mkdir -p "$STACK_DIR/app/public"
-cat > "$STACK_DIR/app/public/index.php" <<'PHP'
-<?php echo "✅ Coolify Ultimate PHP Stack is running.\n";
-PHP
-
-echo
-echo "✅ DONE!"
-echo "Template path: $STACK_DIR"
-echo "Coolify: create Resource -> Docker Compose, paste: $STACK_DIR/docker-compose.yml"
-echo "Assign domain to service: nginx (port 80). Coolify proxy will do SSL."
-echo
-echo "ℹ️ Re-login required to use docker without sudo (docker group)."
+# ====== Install Docker (official repo method) ======
+if ! command -v docker >/dev/null 2>&1; then
+  log "Installing Docker (official repo)..."
+  install -m 0755 -d /etc
