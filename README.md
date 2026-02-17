@@ -1,67 +1,219 @@
+# 🚀 Coolify Selfhost Ultimate Installer
 
+![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-orange?style=for-the-badge&logo=ubuntu)
+![Docker](https://img.shields.io/badge/Docker-Official-blue?style=for-the-badge&logo=docker)
+![Coolify](https://img.shields.io/badge/Coolify-SelfHosted-green?style=for-the-badge)
+![Version](https://img.shields.io/github/v/release/rajibdpi/coolify-selfhost-ubuntu?style=for-the-badge)
 
-# Coolify Self-Host Ubuntu
+Production-ready **one-command installer** for self-hosting Coolify on Ubuntu 24.04.
 
-Automated installation script for **Coolify** on Ubuntu 24.04 with Docker, PHP-FPM stack (MariaDB, Redis, Nginx), and firewall configuration.
+---
 
-## Prerequisites
+## ⚡ One Command Install
 
-- Ubuntu 24.04.x
-- Root access (sudo)
-- Minimum 2GB RAM (configurable swap)
-
-## Quick Start
-
-```bash
-sudo bash install.sh
-```
-
-## Configuration
-
-Override defaults via environment variables:
+Run as normal user (example: `rajib`):
 
 ```bash
-SWAP_GB=4 ENABLE_UFW=1 OPEN_8000=1 sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/rajibdpi/coolify-selfhost-ubuntu/main/install.sh | sudo -E bash
 ```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWAP_GB` | `2` | Swap size in GB (0 to skip) |
-| `ENABLE_UFW` | `1` | Enable firewall (0 to skip) |
-| `OPEN_8000` | `1` | Open port 8000 (0 to skip) |
-| `STACK_DIR` | `/opt/coolify-ultimate/php-stack` | Template installation path |
+---
 
-## What Gets Installed
+## 🎬 Install Preview
 
-- **Docker** (official repository)
-- **Coolify** (self-hosted panel)
-- **PHP Stack** with Docker Compose:
-    - Nginx (Alpine)
-    - PHP 8.3-FPM (Alpine)
-    - MariaDB 11
-    - Redis 7
-- **UFW Firewall** (ports 22, 80, 443, optionally 8000)
-- **Swap** (optional, if needed)
+```bash
+[OK] Updating packages...
+[OK] Installing Docker...
+[OK] Configuring Firewall...
+[OK] Creating Swap...
+[OK] Installing Coolify...
+[OK] Writing PHP Stack Template...
 
-## After Installation
+==============================
+✅ DONE!
+Coolify Panel → http://SERVER_IP:8000
+==============================
+```
 
-1. Access Coolify at: `http://YOUR_SERVER_IP:8000`
-2. Deploy the PHP stack via Coolify UI using `/opt/coolify-ultimate/php-stack/docker-compose.yml`
-3. Database credentials are auto-generated in `.env`
-4. **Logout/login required** for Docker group to take effect
+---
 
-## Firewall Ports
+## 🧱 Architecture Diagram
 
-- **22** (SSH)
-- **80** (HTTP)
-- **443** (HTTPS)
-- **8000** (Coolify Panel, optional)
-you create a README.md, but I need to see the contents of your `install.sh` file first. Could you please share the script so I can understand:
+```
+                🌍 Internet
+                     │
+                     ▼
+            ┌─────────────────┐
+            │  Traefik Proxy  │
+            │    (Coolify)    │
+            └─────────────────┘
+                     │
+      ┌──────────────┼──────────────┐
+      ▼              ▼              ▼
+ ┌──────────┐   ┌──────────┐   ┌──────────┐
+ │   App    │   │ MongoDB  │   │  Redis   │
+ │Container │   │ Database │   │  Cache   │
+ └──────────┘   └──────────┘   └──────────┘
+                     │
+                     ▼
+               Docker Network
+```
 
-- What the project does
-- Installation steps and requirements
-- Dependencies
-- Configuration options
-- Usage instructions
+---
 
-Please paste the contents of your `install.sh` file, and I'll generate an appropriate README based on it.
+## 🧰 What This Installer Does
+
+### ✔ System Setup
+- Updates Ubuntu packages
+- Installs required tools
+
+### ✔ Docker (Official)
+- Docker CE install
+- Docker service enable
+- Adds login user to docker group
+
+### ✔ Security
+Firewall (UFW):
+
+- 22 (SSH)
+- 80 (HTTP)
+- 443 (HTTPS)
+- 8000 (Coolify Panel)
+
+### ✔ Stability
+- Swap memory (optional)
+- Docker log rotation
+- Prevents disk full issues
+
+### ✔ Coolify Install
+Official installer:
+
+```
+https://cdn.coollabs.io/coolify/install.sh
+```
+
+---
+
+## 🧩 Generated Stack Template
+
+Installer creates:
+
+```
+/opt/coolify-ultimate/php-stack
+```
+
+Includes:
+
+- PHP-FPM
+- Nginx
+- MariaDB
+- Redis
+
+Use in Coolify:
+
+```
+Projects → Resources → Docker Compose
+```
+
+---
+
+## 🌐 Access Coolify
+
+```
+http://SERVER_IP:8000
+```
+
+---
+
+## 🔐 Docker Permission (Important)
+
+After install:
+
+```bash
+logout
+```
+
+Login again.
+
+Check:
+
+```bash
+docker ps
+```
+
+---
+
+## ⚙️ Optional Install Modes
+
+### Swap 4GB
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rajibdpi/coolify-selfhost-ubuntu/main/install.sh | sudo -E env SWAP_GB=4 bash
+```
+
+### Disable Firewall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rajibdpi/coolify-selfhost-ubuntu/main/install.sh | sudo -E env ENABLE_UFW=0 bash
+```
+
+---
+
+## 🌍 Recommended DNS Setup
+
+```
+coolify.yourdomain.com → SERVER_IP
+*.yourdomain.com → SERVER_IP
+```
+
+Coolify auto-manages SSL certificates.
+
+---
+
+## 🧠 Production Architecture
+
+```
+Ubuntu 24.04
+      ↓
+Docker Engine
+      ↓
+Coolify
+      ↓
+Traefik Reverse Proxy
+      ↓
+Apps / APIs / Databases
+```
+
+---
+
+## 🧯 Troubleshooting
+
+### Docker Permission Error
+
+```bash
+newgrp docker
+```
+
+---
+
+### Coolify Not Opening
+
+```bash
+docker ps
+```
+
+---
+
+## 👨‍💻 Author
+
+**Rajib Ahmed**
+
+GitHub: https://github.com/rajibdpi
+
+---
+
+## ⭐ Support
+
+If this project helped you:
+
+➡ Give this repo a ⭐
