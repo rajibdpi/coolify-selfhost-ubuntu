@@ -1,32 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ====== Config (override via env) ======
-SWAP_GB="${SWAP_GB:-2}"                  # 0 দিলে swap skip
-ENABLE_UFW="${ENABLE_UFW:-1}"            # 0 দিলে ufw skip
-OPEN_8000="${OPEN_8000:-1}"              # 0 দিলে 8000 port খুলবে না
+# ================================
+# Coolify Selfhost Ultimate Installer (Ubuntu 24.04)
+# - Docker (official repo)
+# - UFW ports (22/80/443/8000)
+# - Optional swap
+# - Install Coolify (official installer)
+# - After Coolify: set Docker log rotation (disk-safe)
+# - Create Laravel/PHP stack template (Nginx+PHP+MariaDB+Redis)
+# ================================
+
+# ---- Config (override via env) ----
+SWAP_GB="${SWAP_GB:-2}"                  # 0 = skip swap
+ENABLE_UFW="${ENABLE_UFW:-1}"            # 0 = skip ufw
+OPEN_8000="${OPEN_8000:-1}"              # 0 = don't open 8000
 STACK_DIR="${STACK_DIR:-/opt/coolify-ultimate/php-stack}"
 
-# ====== Helpers ======
+# If Coolify tries to modify docker network pool without asking:
+# You can FORCE override (Coolify installer message suggested this)
+DOCKER_POOL_FORCE_OVERRIDE="${DOCKER_POOL_FORCE_OVERRIDE:-false}"
+
 log(){ echo -e "\n\033[1;32m[OK]\033[0m $*"; }
 warn(){ echo -e "\n\033[1;33m[WARN]\033[0m $*"; }
 die(){ echo -e "\n\033[1;31m[ERR]\033[0m $*\033[0m" >&2; exit 1; }
 
-# ====== Root check ======
+# ---- Root check ----
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-  die "Run as root: sudo bash $0  (or pipe to sudo bash)"
+  die "Run as: sudo bash install.sh  (or: curl ... | sudo bash)"
 fi
 
-# ====== OS check (24.04) ======
+# ---- OS check ----
 . /etc/os-release
 if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "24.04" ]; then
   die "This script is intended for Ubuntu 24.04.x (found: ${ID:-?} ${VERSION_ID:-?})"
 fi
 
-TARGET_USER="${SUDO_USER:-}"
-if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
-  warn "SUDO_USER not detected. Docker group add may not work for your login user."
-  TARGET_USER="root"
+TARGET_USER="${SUDO_USER:-root}"
+if [ -z "${SUDO_USER:-}" ] || [ "$TARGET_USER" = "root" ]; then
+  warn "SUDO_USER not detected. Docker group add may not apply to your login user."
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -36,7 +48,7 @@ apt update -y
 apt upgrade -y
 apt install -y ca-certificates curl gnupg ufw openssl wget nano cron
 
-# ====== Install Docker (official repo method) ======
+# ---- Install Docker (official repo method) ----
 if ! command -v docker >/dev/null 2>&1; then
   log "Installing Docker (official repo)..."
   install -m 0755 -d /etc/apt/keyrings
@@ -55,9 +67,11 @@ fi
 
 log "Enabling & starting Docker..."
 systemctl enable docker
+systemctl reset-failed docker || true
 systemctl restart docker
+sleep 2
 
-# Add login user to docker group
+# ---- Add login user to docker group ----
 if id "$TARGET_USER" >/dev/null 2>&1; then
   if id -nG "$TARGET_USER" | grep -qw docker; then
     log "User '$TARGET_USER' already in docker group."
@@ -68,20 +82,22 @@ if id "$TARGET_USER" >/dev/null 2>&1; then
   fi
 fi
 
-# ====== UFW ======
+# ---- Firewall ----
 if [ "$ENABLE_UFW" = "1" ]; then
-  log "Configuring firewall (UFW)..."
+  log "Configuring UFW firewall..."
   ufw allow OpenSSH || true
   ufw allow 80/tcp || true
   ufw allow 443/tcp || true
-  if [ "$OPEN_8000" = "1" ]; then ufw allow 8000/tcp || true; fi
+  if [ "$OPEN_8000" = "1" ]; then
+    ufw allow 8000/tcp || true
+  fi
   ufw --force enable || true
   ufw status || true
 else
   warn "Skipping UFW (ENABLE_UFW=0)."
 fi
 
-# ====== Swap (optional) ======
+# ---- Swap (optional) ----
 HAS_SWAP="$(swapon --show | wc -l | tr -d ' ')"
 if [ "$SWAP_GB" -gt 0 ] 2>/dev/null && [ "$HAS_SWAP" -le 1 ] && [ ! -f /swapfile ]; then
   log "Creating ${SWAP_GB}GB swapfile..."
@@ -95,32 +111,40 @@ else
   log "Swap already present or disabled. Skipping."
 fi
 
-# ====== Docker log rotation ======
+# ---- Install Coolify ----
+log "Installing Coolify (official installer)..."
+export DOCKER_POOL_FORCE_OVERRIDE
+curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
+
+# ---- After Coolify: Docker log rotation (disk-safe) ----
 log "Setting Docker log rotation..."
 mkdir -p /etc/docker
+if [ -f /etc/docker/daemon.json ]; then
+  cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%F-%H%M%S)" || true
+fi
+
+# Keep it minimal to avoid breaking Coolify's own docker settings.
 cat >/etc/docker/daemon.json <<'JSON'
 {
   "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  }
+  "log-opts": { "max-size": "10m", "max-file": "3" }
 }
 JSON
+
+systemctl reset-failed docker || true
 systemctl restart docker
+sleep 2
 
-# ====== Install Coolify ======
-log "Installing Coolify (official installer)..."
-curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
-
-# ====== Write PHP Stack Template ======
-log "Writing Compose template for PHP-FPM + MariaDB + Redis + Nginx..."
+# ---- Write PHP stack template ----
+log "Writing Compose template (Nginx + PHP-FPM + MariaDB + Redis)..."
 mkdir -p "$STACK_DIR"/{nginx,app,storage}
 
+# Ownership so rajib can edit
 if id "$TARGET_USER" >/dev/null 2>&1; then
   chown -R "$TARGET_USER":"$TARGET_USER" "$(dirname "$STACK_DIR")" || true
 fi
 
+# Secrets
 ENV_FILE="$STACK_DIR/.env"
 if [ ! -f "$ENV_FILE" ]; then
   MARIADB_PASSWORD="$(openssl rand -base64 24 | tr -d '\n')"
@@ -130,7 +154,7 @@ MARIADB_PASSWORD=${MARIADB_PASSWORD}
 MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
 EOF
   chmod 600 "$ENV_FILE"
-  log "Generated DB secrets at: $ENV_FILE (chmod 600)"
+  log "Generated DB secrets at: $ENV_FILE"
 else
   log ".env already exists at $ENV_FILE (keeping existing secrets)."
 fi
@@ -232,7 +256,7 @@ echo "Template path: $STACK_DIR"
 echo
 echo "Coolify -> Projects/Resources -> Docker Compose:"
 echo "  - Paste $STACK_DIR/docker-compose.yml content"
-echo "  - Add env vars from $STACK_DIR/.env (or paste them into Coolify env)"
+echo "  - Add env vars from $STACK_DIR/.env"
 echo "  - Assign domain to service: nginx (port 80). Coolify proxy will do SSL."
 echo
 echo "ℹ️ Logout/login required for docker group (user: $TARGET_USER)."
