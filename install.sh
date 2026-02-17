@@ -1,54 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ================================
+# ============================================================
 # Coolify Selfhost Ultimate Installer (Ubuntu 24.04)
 # - Docker (official repo)
 # - UFW ports (22/80/443/8000)
 # - Optional swap
 # - Install Coolify (official installer)
-# - After Coolify: set Docker log rotation (disk-safe)
-# - Create Laravel/PHP stack template (Nginx+PHP+MariaDB+Redis)
-# ================================
+# - (Optional) passwordless sudo for TARGET_USER (Coolify validate needs it)
+# - Docker log rotation (disk-safe)
+# - Create PHP stack template (Nginx+PHP+MariaDB+Redis)
+# ============================================================
 
-# ---- Config (override via env) ----
-SWAP_GB="${SWAP_GB:-2}"                  # 0 = skip swap
-ENABLE_UFW="${ENABLE_UFW:-1}"            # 0 = skip ufw
-OPEN_8000="${OPEN_8000:-1}"              # 0 = don't open 8000
+# --------------------
+# Config (override via env)
+# --------------------
+DEFAULT_USER="${DEFAULT_USER:-rajib}"         # preferred non-root user
+SWAP_GB="${SWAP_GB:-2}"                       # 0 = skip swap
+ENABLE_UFW="${ENABLE_UFW:-1}"                 # 0 = skip ufw
+OPEN_8000="${OPEN_8000:-1}"                   # 0 = don't open 8000
+ENABLE_NOPASSWD_SUDO="${ENABLE_NOPASSWD_SUDO:-1}"  # 1 = set NOPASSWD sudo for TARGET_USER (recommended)
 STACK_DIR="${STACK_DIR:-/opt/coolify-ultimate/php-stack}"
 
 # If Coolify tries to modify docker network pool without asking:
-# You can FORCE override (Coolify installer message suggested this)
 DOCKER_POOL_FORCE_OVERRIDE="${DOCKER_POOL_FORCE_OVERRIDE:-false}"
 
+# --------------------
+# Helpers
+# --------------------
 log(){ echo -e "\n\033[1;32m[OK]\033[0m $*"; }
 warn(){ echo -e "\n\033[1;33m[WARN]\033[0m $*"; }
 die(){ echo -e "\n\033[1;31m[ERR]\033[0m $*\033[0m" >&2; exit 1; }
 
-# ---- Root check ----
+# --------------------
+# Must run as root
+# --------------------
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-  die "Run as: sudo bash install.sh  (or: curl ... | sudo bash)"
+  die "Run as root: sudo -E bash install.sh  (or pipe: curl ... | sudo -E bash)"
 fi
 
-# ---- OS check ----
+# --------------------
+# OS check
+# --------------------
 . /etc/os-release
 if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "24.04" ]; then
   die "This script is intended for Ubuntu 24.04.x (found: ${ID:-?} ${VERSION_ID:-?})"
 fi
 
-TARGET_USER="${SUDO_USER:-root}"
-if [ -z "${SUDO_USER:-}" ] || [ "$TARGET_USER" = "root" ]; then
-  warn "SUDO_USER not detected. Docker group add may not apply to your login user."
-fi
-
 export DEBIAN_FRONTEND=noninteractive
 
+# --------------------
+# Pick TARGET_USER
+# - Prefer DEFAULT_USER if exists
+# - else fallback to SUDO_USER
+# - else root
+# --------------------
+TARGET_USER="root"
+if id "$DEFAULT_USER" >/dev/null 2>&1; then
+  TARGET_USER="$DEFAULT_USER"
+elif [ -n "${SUDO_USER:-}" ] && id "${SUDO_USER:-}" >/dev/null 2>&1; then
+  TARGET_USER="${SUDO_USER}"
+fi
+
+if [ "$TARGET_USER" = "root" ]; then
+  warn "TARGET_USER resolved to root. Coolify validation works best with a non-root user."
+  warn "Tip: create user '${DEFAULT_USER}' and rerun, or set DEFAULT_USER=<name>."
+else
+  log "TARGET_USER: $TARGET_USER"
+fi
+
+# --------------------
+# Base packages
+# --------------------
 log "Updating packages & installing base tools..."
 apt update -y
 apt upgrade -y
 apt install -y ca-certificates curl gnupg ufw openssl wget nano cron
 
-# ---- Install Docker (official repo method) ----
+# --------------------
+# Install Docker (official repo method)
+# --------------------
 if ! command -v docker >/dev/null 2>&1; then
   log "Installing Docker (official repo)..."
   install -m 0755 -d /etc/apt/keyrings
@@ -71,8 +102,10 @@ systemctl reset-failed docker || true
 systemctl restart docker
 sleep 2
 
-# ---- Add login user to docker group ----
-if id "$TARGET_USER" >/dev/null 2>&1; then
+# --------------------
+# Add TARGET_USER to docker group (skip for root)
+# --------------------
+if [ "$TARGET_USER" != "root" ] && id "$TARGET_USER" >/dev/null 2>&1; then
   if id -nG "$TARGET_USER" | grep -qw docker; then
     log "User '$TARGET_USER' already in docker group."
   else
@@ -80,9 +113,13 @@ if id "$TARGET_USER" >/dev/null 2>&1; then
     usermod -aG docker "$TARGET_USER" || true
     warn "Logout/login required for docker group to apply for '$TARGET_USER'."
   fi
+else
+  log "Skipping docker group modification (TARGET_USER=root)."
 fi
 
-# ---- Firewall ----
+# --------------------
+# UFW firewall
+# --------------------
 if [ "$ENABLE_UFW" = "1" ]; then
   log "Configuring UFW firewall..."
   ufw allow OpenSSH || true
@@ -97,7 +134,9 @@ else
   warn "Skipping UFW (ENABLE_UFW=0)."
 fi
 
-# ---- Swap (optional) ----
+# --------------------
+# Swap (optional)
+# --------------------
 HAS_SWAP="$(swapon --show | wc -l | tr -d ' ')"
 if [ "$SWAP_GB" -gt 0 ] 2>/dev/null && [ "$HAS_SWAP" -le 1 ] && [ ! -f /swapfile ]; then
   log "Creating ${SWAP_GB}GB swapfile..."
@@ -111,19 +150,35 @@ else
   log "Swap already present or disabled. Skipping."
 fi
 
-# ---- Install Coolify ----
+# --------------------
+# (Optional) passwordless sudo for TARGET_USER (Coolify validate needs it)
+# --------------------
+if [ "$ENABLE_NOPASSWD_SUDO" = "1" ] && [ "$TARGET_USER" != "root" ] && id "$TARGET_USER" >/dev/null 2>&1; then
+  log "Configuring passwordless sudo for '$TARGET_USER' (needed for Coolify server validation)..."
+  SUDO_FILE="/etc/sudoers.d/${TARGET_USER}-nopasswd"
+  echo "${TARGET_USER} ALL=(ALL) NOPASSWD:ALL" > "$SUDO_FILE"
+  chmod 440 "$SUDO_FILE"
+else
+  warn "Skipping passwordless sudo setup (ENABLE_NOPASSWD_SUDO=0 or TARGET_USER=root)."
+fi
+
+# --------------------
+# Install Coolify
+# --------------------
 log "Installing Coolify (official installer)..."
 export DOCKER_POOL_FORCE_OVERRIDE
 curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 
-# ---- After Coolify: Docker log rotation (disk-safe) ----
+# --------------------
+# Docker log rotation (disk-safe)
+# - minimal config to reduce conflicts
+# --------------------
 log "Setting Docker log rotation..."
 mkdir -p /etc/docker
 if [ -f /etc/docker/daemon.json ]; then
   cp /etc/docker/daemon.json "/etc/docker/daemon.json.bak.$(date +%F-%H%M%S)" || true
 fi
 
-# Keep it minimal to avoid breaking Coolify's own docker settings.
 cat >/etc/docker/daemon.json <<'JSON'
 {
   "log-driver": "json-file",
@@ -135,12 +190,14 @@ systemctl reset-failed docker || true
 systemctl restart docker
 sleep 2
 
-# ---- Write PHP stack template ----
+# --------------------
+# Write PHP stack template
+# --------------------
 log "Writing Compose template (Nginx + PHP-FPM + MariaDB + Redis)..."
 mkdir -p "$STACK_DIR"/{nginx,app,storage}
 
-# Ownership so rajib can edit
-if id "$TARGET_USER" >/dev/null 2>&1; then
+# Ownership so TARGET_USER can edit
+if [ "$TARGET_USER" != "root" ] && id "$TARGET_USER" >/dev/null 2>&1; then
   chown -R "$TARGET_USER":"$TARGET_USER" "$(dirname "$STACK_DIR")" || true
 fi
 
@@ -252,12 +309,22 @@ echo
 echo "=============================="
 echo "✅ DONE!"
 echo "Coolify Panel: http://${IP:-YOUR_SERVER_IP}:8000"
-echo "Template path: $STACK_DIR"
 echo
+echo "Coolify Server Validation:"
+if [ "$TARGET_USER" != "root" ]; then
+  echo "  - In Coolify -> Servers -> localhost:"
+  echo "    Host: 127.0.0.1 (or your server IP)"
+  echo "    User: $TARGET_USER"
+  echo "    Port: 22"
+  echo "    Then click: Validate Server"
+else
+  echo "  - Create a non-root user (recommended: ${DEFAULT_USER}), add Coolify SSH key, then Validate."
+fi
+echo
+echo "Template path: $STACK_DIR"
 echo "Coolify -> Projects/Resources -> Docker Compose:"
 echo "  - Paste $STACK_DIR/docker-compose.yml content"
 echo "  - Add env vars from $STACK_DIR/.env"
 echo "  - Assign domain to service: nginx (port 80). Coolify proxy will do SSL."
 echo
-echo "ℹ️ Logout/login required for docker group (user: $TARGET_USER)."
 echo "=============================="
